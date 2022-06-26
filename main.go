@@ -7,7 +7,7 @@ import (
 
 func main() {
 	if utils.InitFlags() {
-		utils.Init()
+		spider.Init()
 		_ = spider.NewDanmuSpider(*utils.RoomID)
 	}
 }

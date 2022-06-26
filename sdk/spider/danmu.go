@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/AkibaSummer/Danmu/sdk/structs"
 	"github.com/AkibaSummer/Danmu/sdk/utils"
+	"github.com/AkibaSummer/Danmu/sdk/utils/logger"
+
 	"github.com/andybalholm/brotli"
 	"github.com/gorilla/websocket"
 	"io/ioutil"
@@ -120,39 +121,39 @@ func EncodeMessage(msg string, Operation int) []byte {
 	buffer.Write(Itob32(int32(Operation)))
 	buffer.Write(Itob32(int32(WS_HEADER_DEFAULT_SEQUENCE)))
 	buffer.Write(byteMsg)
-	utils.Debug.Println("发送消息：", msg)
 	return buffer.Bytes()
 }
 
 func (d *DanmuSpider) MessageHandler(msg *Message) {
-	cmd := structs.Cmd{}
-	utils.PanicIfNotNil(json.Unmarshal(msg.Body, &cmd))
-	switch cmd.Cmd {
-	case "DANMU_MSG":
-		Comment := structs.Comment{}
-		Comment.CommentText = cmd.Info[1].(string)
-		Comment.UserID = int64(cmd.Info[2].([]interface{})[0].(float64))
-		Comment.UserName = cmd.Info[2].([]interface{})[1].(string)
-		Comment.IsAdmin = int64(cmd.Info[2].([]interface{})[2].(float64)) == 1
-		Comment.IsVIP = int64(cmd.Info[2].([]interface{})[3].(float64)) == 1
-		Comment.UserGuardLevel = int64(cmd.Info[7].(float64))
-		utils.Info.Println(Comment.String())
-	case "INTERACT_WORD":
-		Interact := structs.Interact{}
-		utils.PanicIfNotNil(json.Unmarshal(msg.Body, &Interact))
-		utils.Info.Println(Interact.String())
-	case "WATCHED_CHANGE":
-		WatchedChange := structs.WatchedChange{}
-		utils.PanicIfNotNil(json.Unmarshal(msg.Body, &WatchedChange))
-		utils.Info.Println(WatchedChange.String())
-	case "STOP_LIVE_ROOM_LIST":
-		StopLiveRoomList := structs.StopLiveRoomList{}
-		utils.PanicIfNotNil(json.Unmarshal(msg.Body, &StopLiveRoomList))
-		utils.Info.Println(StopLiveRoomList.String())
-	default:
-		utils.Info.Println("未知Message类型:", cmd.Cmd, "，记录于文件中待未来分析")
-		utils.File.Println(hex.EncodeToString(msg.Body), string(msg.Body))
-	}
+	//cmd := structs.Cmd{}
+	//utils.PanicIfNotNil(json.Unmarshal(msg.Body, &cmd))
+	Info <- logger.NewMsgInternalLoggerChannelMessage(string(msg.Body))
+	//switch cmd.Cmd {
+	//case "DANMU_MSG":
+	//	Comment := structs.Comment{}
+	//	Comment.CommentText = cmd.Info[1].(string)
+	//	Comment.UserID = int64(cmd.Info[2].([]interface{})[0].(float64))
+	//	Comment.UserName = cmd.Info[2].([]interface{})[1].(string)
+	//	Comment.IsAdmin = int64(cmd.Info[2].([]interface{})[2].(float64)) == 1
+	//	Comment.IsVIP = int64(cmd.Info[2].([]interface{})[3].(float64)) == 1
+	//	Comment.UserGuardLevel = int64(cmd.Info[7].(float64))
+	//
+	//case "INTERACT_WORD":
+	//	Interact := structs.Interact{}
+	//	utils.PanicIfNotNil(json.Unmarshal(msg.Body, &Interact))
+	//	logger.Info.Println(Interact.String())
+	//case "WATCHED_CHANGE":
+	//	WatchedChange := structs.WatchedChange{}
+	//	utils.PanicIfNotNil(json.Unmarshal(msg.Body, &WatchedChange))
+	//	logger.Info.Println(WatchedChange.String())
+	//case "STOP_LIVE_ROOM_LIST":
+	//	StopLiveRoomList := structs.StopLiveRoomList{}
+	//	utils.PanicIfNotNil(json.Unmarshal(msg.Body, &StopLiveRoomList))
+	//	logger.Info <- logger.NewSystemInternalLoggerChannelMessage()
+	//	Println(StopLiveRoomList.String())
+	//default:
+	//	logger.Debug <- logger.NewInternalLoggerChannelMessage(logger.LevelInfo, logger.TypeMsg, string(msg.Body))
+	//}
 }
 
 func (d *DanmuSpider) DecodeMessage(msg []byte) {
@@ -183,7 +184,7 @@ func (d *DanmuSpider) DecodeMessage(msg []byte) {
 	case WS_OP_HEARTBEAT_REPLY:
 		var count int32
 		utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &count))
-		utils.Info.Println("直播间人气:", count)
+		logger.NewSystemInternalLoggerChannelMessage("直播间人气:", count)
 	case WS_OP_MESSAGE:
 		if m.Ver == WS_BODY_PROTOCOL_VERSION_NORMAL {
 			d.MessageHandler(&m)
@@ -205,10 +206,9 @@ func (d *DanmuSpider) DecodeMessage(msg []byte) {
 			}
 		}
 	case WS_OP_CONNECT_SUCCESS:
-		utils.Info.Println("成功进入房间")
+		Debug <- logger.NewSystemInternalLoggerChannelMessage("成功进入房间")
 	default:
-		utils.Info.Println("未知操作类型:", m.Op, "，记录于文件中待未来分析")
-		utils.File.Println(m.Op, string(m.Body))
+		Debug <- logger.NewSystemInternalLoggerChannelMessage("Unknown OpType", m.Op, string(m.Body))
 	}
 	//switch m.Op {
 	//case WS_OP_MESSAGE:
@@ -223,12 +223,11 @@ func (d *DanmuSpider) DecodeMessage(msg []byte) {
 }
 
 func (d *DanmuSpider) Send(msg []byte) {
-	utils.Debug.Println("发送消息: " + hex.EncodeToString(msg))
 	utils.PanicIfNotNil(d.Dial.WriteMessage(websocket.TextMessage, msg))
 }
 
 func (d *DanmuSpider) HeartBeat() {
-	utils.Debug.Printf("发送心跳包")
+	Debug <- logger.NewSystemInternalLoggerChannelMessage("发送心跳包")
 	d.Send(EncodeMessage("[object Object]", WS_OP_HEARTBEAT))
 }
 
@@ -262,7 +261,7 @@ func (d *DanmuSpider) Init() {
 	// Connect To DanmuServer
 	{
 		u := url.URL{Scheme: "wss", Host: d.WSURL[0], Path: "/sub"}
-		utils.Info.Println("尝试建立连接：", u.String(), "房间ID：", d.RoomID)
+		Debug <- logger.NewSystemInternalLoggerChannelMessage("尝试建立连接：", u.String(), "房间ID：", d.RoomID)
 		var err error
 		d.Dial, _, err = websocket.DefaultDialer.Dial(u.String(), make(http.Header))
 		utils.PanicIfNotNil(err)
@@ -280,11 +279,11 @@ func (d *DanmuSpider) Init() {
 					if e, ok := err.(*websocket.CloseError); ok {
 						switch e.Code {
 						case websocket.CloseNormalClosure:
-							utils.Info.Println("服务器连接关闭")
+							Debug <- logger.NewSystemInternalLoggerChannelMessage("服务器连接关闭")
 						case websocket.CloseAbnormalClosure:
-							utils.Info.Println("服务器连接中断")
+							Debug <- logger.NewSystemInternalLoggerChannelMessage("服务器连接中断")
 						default:
-							utils.Info.Println("未知错误")
+							Debug <- logger.NewSystemInternalLoggerChannelMessage("未知错误")
 						}
 					}
 					return
@@ -292,7 +291,7 @@ func (d *DanmuSpider) Init() {
 				utils.PanicIfNotNil(err)
 				switch messageType {
 				case websocket.TextMessage:
-					utils.Info.Println("TextMessage Rec: ", string(message))
+					Debug <- logger.NewSystemInternalLoggerChannelMessage("TextMessage Rec: ", string(message))
 				case websocket.BinaryMessage:
 					d.DecodeMessage(message)
 				case websocket.CloseMessage:

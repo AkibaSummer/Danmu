@@ -8,7 +8,7 @@ import (
 
 func TestDanmuSpider_Init(t *testing.T) {
 	Init()
-	_ = NewDanmuSpider(675014)
+	_ = NewDanmuSpider(23075997)
 }
 
 func TestJsonQ(t *testing.T) {

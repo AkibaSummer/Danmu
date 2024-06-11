@@ -8,6 +8,6 @@ import (
 func main() {
 	if utils.InitFlags() {
 		spider.Init()
-		_ = spider.NewDanmuSpider(*utils.RoomID)
+		_ = spider.NewDanmuSpider(*utils.RoomID, *utils.UID, *utils.BUVID, *utils.SESSDATA)
 	}
 }

@@ -6,20 +6,25 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+
 	"github.com/AkibaSummer/Danmu/sdk/structs"
 	"github.com/AkibaSummer/Danmu/sdk/utils"
 	"github.com/AkibaSummer/Danmu/sdk/utils/logger"
 
-	"github.com/andybalholm/brotli"
-	"github.com/gorilla/websocket"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/andybalholm/brotli"
+	"github.com/gorilla/websocket"
 )
 
 type DanmuSpider struct {
-	ShortID int
+	ShortID  int
+	UID      int64
+	BUVID    string
+	SESSDATA string
 
 	Live              []string  //直播流链接
 	Live_qn           int       //当前直播流质量
@@ -45,16 +50,23 @@ type DanmuSpider struct {
 	Dial *websocket.Conn
 }
 
-func NewDanmuSpider(shortId int) *DanmuSpider {
-	ret := &DanmuSpider{ShortID: shortId}
+func NewDanmuSpider(shortId int,
+	uid int64,
+	buvid string,
+	sessdata string,
+) *DanmuSpider {
+	ret := &DanmuSpider{ShortID: shortId,
+		UID:      uid,
+		BUVID:    buvid,
+		SESSDATA: sessdata}
 	ret.Init()
 	return ret
 }
 
 /*
-	整数 字节转换区
-	32 4字节
-	16 2字节
+整数 字节转换区
+32 4字节
+16 2字节
 */
 func Itob32(num int32) []byte {
 	var buffer bytes.Buffer
@@ -92,13 +104,13 @@ func Btoi16(b []byte, offset int) int16 {
 	return btoi16(b[offset : offset+2])
 }
 
-//认证生成与检查
-func HelloGen(roomid int, key string) []byte {
-	if roomid == 0 || key == "" {
+// 认证生成与检查
+func HelloGen(roomid int, uid int64, buvid string, key string) []byte {
+	if roomid == 0 || buvid == "" || key == "" {
 		return []byte("")
 	}
 
-	var obj = fmt.Sprintf(`{"roomid":%d,"uid":0,"protover":3,"key":"%s","platform":"danmuji","type":2}`, roomid, key)
+	var obj = fmt.Sprintf(`{"roomid":%d,"uid":%d,"buvid":"%s","protover":3,"key":"%s","platform":"web","type":2}`, roomid, uid, buvid, key)
 
 	return EncodeMessage(obj, WS_OP_USER_AUTHENTICATION)
 }
@@ -245,7 +257,12 @@ func (d *DanmuSpider) Init() {
 
 	//Get DanmuServerURL
 	{
-		resp, err := http.Get(GetDanmuInfoURL(d.RoomID))
+		req, _ := http.NewRequest("GET", GetDanmuInfoURL(d.RoomID), nil)
+		req.Header.Add("Cookie",
+			fmt.Sprintf("SESSDATA=%s", d.SESSDATA),
+		)
+		resp, err := http.DefaultClient.Do(req)
+		// resp, err := http.Get(GetDanmuInfoURL(d.RoomID))
 		utils.PanicIfNotNil(err)
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
@@ -267,7 +284,7 @@ func (d *DanmuSpider) Init() {
 		utils.PanicIfNotNil(err)
 		defer d.Dial.Close()
 
-		d.Send(HelloGen(d.RoomID, d.Token))
+		d.Send(HelloGen(d.RoomID, d.UID, d.BUVID, d.Token))
 
 		done := make(chan struct{})
 		go func() {

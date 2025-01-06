@@ -6,12 +6,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/AkibaSummer/Danmu/sdk/structs"
 	"github.com/AkibaSummer/Danmu/sdk/utils"
 	"github.com/AkibaSummer/Danmu/sdk/utils/logger"
 
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"time"
@@ -111,7 +111,6 @@ func HelloGen(roomid int, uid int64, buvid string, key string) []byte {
 	}
 
 	var obj = fmt.Sprintf(`{"roomid":%d,"uid":%d,"buvid":"%s","protover":3,"key":"%s","platform":"web","type":2}`, roomid, uid, buvid, key)
-
 	return EncodeMessage(obj, WS_OP_USER_AUTHENTICATION)
 }
 
@@ -177,7 +176,7 @@ func (d *DanmuSpider) DecodeMessage(msg []byte) {
 	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.Ver))
 	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.Op))
 	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.Seq))
-	m.Body, err = ioutil.ReadAll(reader)
+	m.Body, err = io.ReadAll(reader)
 	utils.PanicIfNotNil(err)
 	switch m.Ver {
 	case WS_BODY_PROTOCOL_VERSION_NORMAL:
@@ -185,10 +184,10 @@ func (d *DanmuSpider) DecodeMessage(msg []byte) {
 	case WS_BODY_PROTOCOL_VERSION_DEFLATE:
 		zlibReader, err := zlib.NewReader(bytes.NewReader(m.Body))
 		utils.PanicIfNotNil(err)
-		m.Body, err = ioutil.ReadAll(zlibReader)
+		m.Body, err = io.ReadAll(zlibReader)
 		utils.PanicIfNotNil(err)
 	case WS_BODY_PROTOCOL_VERSION_BROTLI:
-		m.Body, err = ioutil.ReadAll(brotli.NewReader(bytes.NewReader(m.Body)))
+		m.Body, err = io.ReadAll(brotli.NewReader(bytes.NewReader(m.Body)))
 		utils.PanicIfNotNil(err)
 	}
 	bodyReader := bytes.NewReader(m.Body)
@@ -196,7 +195,7 @@ func (d *DanmuSpider) DecodeMessage(msg []byte) {
 	case WS_OP_HEARTBEAT_REPLY:
 		var count int32
 		utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &count))
-		logger.NewSystemInternalLoggerChannelMessage("直播间人气:", count)
+		Info <- logger.NewSystemInternalLoggerChannelMessage("直播间人气:", count)
 	case WS_OP_MESSAGE:
 		if m.Ver == WS_BODY_PROTOCOL_VERSION_NORMAL {
 			d.MessageHandler(&m)
@@ -249,7 +248,8 @@ func (d *DanmuSpider) Init() {
 		resp, err := http.Get(GetInfoByRoomURL(d.ShortID))
 		utils.PanicIfNotNil(err)
 		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		utils.PanicIfNotNil(err)
 		struttedResp := structs.NewGetInfoByRoomResp()
 		utils.PanicIfNotNil(json.Unmarshal(body, &struttedResp))
 		d.RoomID = struttedResp.Data.RoomInfo.RoomId
@@ -265,7 +265,8 @@ func (d *DanmuSpider) Init() {
 		// resp, err := http.Get(GetDanmuInfoURL(d.RoomID))
 		utils.PanicIfNotNil(err)
 		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		utils.PanicIfNotNil(err)
 		struttedResp := structs.NewGetDanmuInfoResp()
 		utils.PanicIfNotNil(json.Unmarshal(body, &struttedResp))
 
@@ -325,7 +326,7 @@ func (d *DanmuSpider) Init() {
 
 		for {
 			select {
-			case _ = <-ticker.C:
+			case <-ticker.C:
 				d.HeartBeat()
 			case <-done:
 				return

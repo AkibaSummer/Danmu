@@ -1,7 +1,12 @@
 package utils
 
-import "encoding/hex"
-import "github.com/apache/thrift/lib/go/thrift"
+import (
+	"encoding/hex"
+	"fmt"
+
+	"github.com/apache/thrift/lib/go/thrift"
+	"github.com/shopspring/decimal"
+)
 
 func PanicIfNotNil(err error) {
 	if err != nil {
@@ -44,11 +49,31 @@ func GetInt64(i interface{}) *int64 {
 	}
 }
 
+func Unptr[T any](t *T) T {
+	var ret T
+	if t == nil {
+		return ret
+	}
+	return *t
+}
+
 func GetString(i interface{}) *string {
 	switch v := i.(type) {
 	case string:
 		return &v
 	default:
 		return nil
+	}
+}
+
+func JsonResToString(i any) string {
+	switch result := i.(type) {
+	case string:
+		return result
+	case float64:
+		str, _ := decimal.NewFromString(fmt.Sprint(result))
+		return str.String()
+	default:
+		return fmt.Sprint(result)
 	}
 }

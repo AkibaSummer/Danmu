@@ -234,7 +234,7 @@ func (d *DanmuClient) Init() error {
 					case websocket.CloseNormalClosure:
 						log.Println("服务器连接关闭")
 					case websocket.CloseAbnormalClosure:
-						log.Println("服务器连接中断")
+						log.Println("服务器连接中断", e.Text)
 					default:
 						log.Println("未知错误")
 					}

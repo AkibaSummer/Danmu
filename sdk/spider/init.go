@@ -2,12 +2,12 @@ package spider
 
 import (
 	"fmt"
-	"github.com/AkibaSummer/Danmu/sdk/structs"
-	"github.com/AkibaSummer/Danmu/sdk/utils"
-	"github.com/AkibaSummer/Danmu/sdk/utils/logger"
 	"io"
 	"os"
 	"time"
+
+	"github.com/AkibaSummer/Danmu/sdk/structs"
+	"github.com/AkibaSummer/Danmu/sdk/utils/logger"
 )
 
 var (
@@ -18,10 +18,9 @@ var (
 func Init() {
 	// Init system writer
 	StdWriter := os.Stdout
-	debugWriter, err := os.OpenFile("debugLogs.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	utils.PanicIfNotNil(err)
-	defaultWriter, err := os.OpenFile("defaultLogs.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	utils.PanicIfNotNil(err)
+
+	debugWriter := logger.NewLogManager("debugLogs")
+	defaultWriter := logger.NewLogManager("defaultLogs")
 
 	// Init user writer
 	debug := logger.NewWriterWithDefaultInput([]io.Writer{debugWriter})

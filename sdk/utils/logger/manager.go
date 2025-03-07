@@ -10,10 +10,9 @@ import (
 )
 
 type LogManager struct {
-	logDir       string
-	currentFile  *os.File
-	mutex        sync.Mutex
-	nextRotation time.Time
+	logDir      string
+	currentFile *os.File
+	mutex       sync.Mutex
 }
 
 func NewLogManager(logDir string) *LogManager {
@@ -28,18 +27,14 @@ func (lm *LogManager) Write(p []byte) (n int, err error) {
 	lm.mutex.Lock()
 	defer lm.mutex.Unlock()
 
-	if time.Now().After(lm.nextRotation) {
-		lm.rotateFile()
-	}
-
+	lm.rotateFile()
 	return lm.currentFile.Write(p)
 }
 
 func (lm *LogManager) rotateFile() {
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	newPath := filepath.Join(lm.logDir, fmt.Sprintf("%d-%02d-%02d.log",
-		now.Year(), now.Month(), now.Day()))
+	now := time.Now().Unix() / 60
+	newPath := filepath.Join(lm.logDir, fmt.Sprintf("%d.log", now))
+	latestLink := filepath.Join(lm.logDir, "latest.log")
 
 	// 如果当前文件已经存在且是同一个文件，则不需要重新打开
 	if lm.currentFile != nil {
@@ -65,7 +60,9 @@ func (lm *LogManager) rotateFile() {
 	}
 
 	lm.currentFile = file
-	lm.nextRotation = today.Add(24 * time.Hour)
+	// 创建或更新符号链接
+	os.Remove(latestLink) // 删除已存在的链接
+	os.Symlink(newPath, latestLink)
 }
 
 func (lm *LogManager) Close() error {

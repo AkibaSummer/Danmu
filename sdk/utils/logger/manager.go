@@ -32,9 +32,12 @@ func (lm *LogManager) Write(p []byte) (n int, err error) {
 }
 
 func (lm *LogManager) rotateFile() {
-	now := time.Now().Unix() / 60
-	newPath := filepath.Join(lm.logDir, fmt.Sprintf("%d.log", now))
+	now := time.Now()
+	newPath := filepath.Join(lm.logDir, fmt.Sprintf("%d-%02d-%02d.log",
+		now.Year(), now.Month(), now.Day()))
+
 	latestLink := filepath.Join(lm.logDir, "latest.log")
+	tempLink := filepath.Join(lm.logDir, "latest.log.tmp")
 
 	// 如果当前文件已经存在且是同一个文件，则不需要重新打开
 	if lm.currentFile != nil {
@@ -59,10 +62,27 @@ func (lm *LogManager) rotateFile() {
 		log.Fatal("打开日志文件失败:", err)
 	}
 
+	// 获取绝对路径
+	absNewPath, err := filepath.Abs(newPath)
+	if err != nil {
+		log.Fatal("获取绝对路径失败:", err)
+	}
+
 	lm.currentFile = file
-	// 创建或更新符号链接
-	os.Remove(latestLink) // 删除已存在的链接
-	os.Symlink(newPath, latestLink)
+
+	// 先创建临时链接
+	os.Remove(tempLink)
+	if err := os.Symlink(absNewPath, tempLink); err != nil {
+		log.Printf("创建临时链接失败: %v", err)
+		return
+	}
+
+	// 原子性地重命名临时链接
+	if err := os.Rename(tempLink, latestLink); err != nil {
+		log.Printf("重命名链接失败: %v", err)
+		os.Remove(tempLink)
+		return
+	}
 }
 
 func (lm *LogManager) Close() error {

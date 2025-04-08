@@ -245,7 +245,11 @@ func (d *DanmuSpider) HeartBeat() {
 func (d *DanmuSpider) Init() {
 	//Get RoomID
 	{
-		resp, err := http.Get(GetInfoByRoomURL(d.ShortID))
+		req, _ := http.NewRequest("GET", GetInfoByRoomURL(d.ShortID), nil)
+		req.Header.Add("Cookie",
+			fmt.Sprintf("buvid3=%s", d.BUVID),
+		)
+		resp, err := http.DefaultClient.Do(req)
 		utils.PanicIfNotNil(err)
 		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)

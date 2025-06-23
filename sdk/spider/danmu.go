@@ -245,10 +245,15 @@ func (d *DanmuSpider) HeartBeat() {
 func (d *DanmuSpider) Init() {
 	//Get RoomID
 	{
-		req, _ := http.NewRequest("GET", GetInfoByRoomURL(d.ShortID), nil)
+		parsed, err := url.Parse(GetInfoByRoomURL(d.ShortID))
+		utils.PanicIfNotNil(err)
+		err = utils.Sign(parsed)
+		utils.PanicIfNotNil(err)
+		req, _ := http.NewRequest("GET", parsed.String(), nil)
 		req.Header.Add("Cookie",
 			fmt.Sprintf("buvid3=%s", d.BUVID),
 		)
+		req.Header.Add("user-agent", userAgent)
 		resp, err := http.DefaultClient.Do(req)
 		utils.PanicIfNotNil(err)
 		defer resp.Body.Close()
@@ -261,10 +266,15 @@ func (d *DanmuSpider) Init() {
 
 	//Get DanmuServerURL
 	{
-		req, _ := http.NewRequest("GET", GetDanmuInfoURL(d.RoomID), nil)
+		parsed, err := url.Parse(GetDanmuInfoURL(d.RoomID))
+		utils.PanicIfNotNil(err)
+		err = utils.Sign(parsed)
+		utils.PanicIfNotNil(err)
+		req, _ := http.NewRequest("GET", parsed.String(), nil)
 		req.Header.Add("Cookie",
 			fmt.Sprintf("SESSDATA=%s", d.SESSDATA),
 		)
+		req.Header.Add("user-agent", userAgent)
 		resp, err := http.DefaultClient.Do(req)
 		// resp, err := http.Get(GetDanmuInfoURL(d.RoomID))
 		utils.PanicIfNotNil(err)

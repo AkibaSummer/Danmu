@@ -6,7 +6,7 @@ import (
 	"net/url"
 )
 
-//from https://github.com/lovelyyoshino/Bilibili-Live-API/blob/master/API.WebSocket.md
+// from https://github.com/lovelyyoshino/Bilibili-Live-API/blob/master/API.WebSocket.md
 const (
 	WS_OP_HEARTBEAT                          = 2  //心跳
 	WS_OP_HEARTBEAT_REPLY                    = 3  //心跳回应
@@ -44,6 +44,7 @@ const (
 const (
 	getRoomByInfoURL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom"
 	getDanmuInfoURL  = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
+	userAgent        = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 )
 
 func GetInfoByRoomURL(shortID int) string {
@@ -67,6 +68,7 @@ func GetDanmuInfoURL(roomID int) string {
 
 	params.Set("id", fmt.Sprint(roomID))
 	params.Set("type", fmt.Sprint(0))
+	params.Set("web_location", fmt.Sprint("444.8"))
 
 	Url.RawQuery = params.Encode()
 	urlPath := Url.String()

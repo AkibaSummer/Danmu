@@ -272,7 +272,7 @@ func (d *DanmuSpider) Init() {
 		utils.PanicIfNotNil(err)
 		req, _ := http.NewRequest("GET", parsed.String(), nil)
 		req.Header.Add("Cookie",
-			fmt.Sprintf("SESSDATA=%s", d.SESSDATA),
+			fmt.Sprintf("buvid3=%s; SESSDATA=%s", d.BUVID, d.SESSDATA),
 		)
 		req.Header.Add("user-agent", userAgent)
 		resp, err := http.DefaultClient.Do(req)

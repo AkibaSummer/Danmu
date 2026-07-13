@@ -8,6 +8,7 @@ require (
 	github.com/go-playground/validator/v10 v10.22.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/shopspring/decimal v1.4.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/viper v1.19.0
 	github.com/thedevsaddam/gojsonq/v2 v2.5.2
 )

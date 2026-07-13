@@ -1,6 +1,8 @@
 package spider
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"github.com/AkibaSummer/Danmu/sdk/utils"
 	"net/url"
@@ -69,8 +71,22 @@ func GetDanmuInfoURL(roomID int) string {
 	params.Set("id", fmt.Sprint(roomID))
 	params.Set("type", fmt.Sprint(0))
 	params.Set("web_location", fmt.Sprint("444.8"))
+	// Browser fingerprint fields are required by Bilibili's WBI risk control on
+	// some data-center IPs. Missing fields commonly return code -352.
+	params.Set("dm_img_list", "[]")
+	params.Set("dm_img_str", randomFingerprint(24))
+	params.Set("dm_cover_img_str", randomFingerprint(48))
+	params.Set("dm_img_inter", `{"ds":[],"wh":[1920,1080,24],"of":[0,0,0]}`)
 
 	Url.RawQuery = params.Encode()
 	urlPath := Url.String()
 	return urlPath
+}
+
+func randomFingerprint(size int) string {
+	data := make([]byte, size)
+	if _, err := rand.Read(data); err != nil {
+		return base64.RawStdEncoding.EncodeToString([]byte(fmt.Sprintf("danmu-%d", size)))
+	}
+	return base64.RawStdEncoding.EncodeToString(data)
 }

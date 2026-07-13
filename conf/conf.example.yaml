@@ -1,0 +1,23 @@
+bili:
+  # 必填：直播间短号或房间号。
+  ShortID: 23075997
+  # 扫码账号必须与此 UID 一致，防止登录错账号。
+  UID: 0
+  BUVID: ""
+  Cookie: ""
+  RefreshToken: ""
+  AuthStateFile: conf/auth_state.json
+  EndpointStateFile: conf/danmu_endpoint.json
+  AuthCheckInterval: 15m
+  AuthRetryInterval: 1m
+  QRLogin: true
+
+health:
+  addr: 127.0.0.1:10216
+
+# 推荐通过 EnvironmentFile 提供 LARK_APPID、LARK_APPSECRET、LARK_CHATID，
+# 不要把真实密钥写进仓库。
+lark:
+  AppID: ""
+  AppSecret: ""
+  ChatID: ""

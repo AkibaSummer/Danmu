@@ -19,3 +19,9 @@
 logs/
 *.log
 defaultLogs/
+debugLogs/
+conf/auth_state.json
+Danmu.linux
+conf/danmu_endpoint.json
+conf/conf.yaml
+.codex-ssh-askpass.cmd

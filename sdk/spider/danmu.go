@@ -3,115 +3,86 @@ package spider
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/AkibaSummer/Danmu/sdk/structs"
 	"github.com/AkibaSummer/Danmu/sdk/utils"
 	"github.com/AkibaSummer/Danmu/sdk/utils/logger"
-
-	"net/http"
-	"net/url"
-	"time"
-
 	"github.com/andybalholm/brotli"
 	"github.com/gorilla/websocket"
 )
 
-type DanmuSpider struct {
-	ShortID  int
-	UID      int64
-	BUVID    string
-	SESSDATA string
+type FailureKind string
 
-	Live              []string  //直播流链接
-	Live_qn           int       //当前直播流质量
-	Live_want_qn      int       //期望直播流质量
-	RoomID            int       //房间id
-	Title             string    //直播标题
-	Uname             string    //主播名
-	UpUid             int       //主播uid
-	Rev               float64   //营收
-	Renqi             int       //人气
-	GuardNum          int       //舰长数
-	ParentAreaID      int       //父分区
-	AreaID            int       //子分区
-	Locked            bool      //直播间封禁
-	Note              string    //分区排行
-	Live_Start_Time   time.Time //直播开始时间
-	Liveing           bool      //是否在直播
-	Wearing_FansMedal int       //当前佩戴的粉丝牌
-	Token             string    //弹幕钥
-	WSURL             []string  //弹幕链接
-	LIVE_BUVID        bool      //cookies含LIVE_BUVID
+const (
+	FailureAuth     FailureKind = "auth"
+	FailureNetwork  FailureKind = "network"
+	FailureAPI      FailureKind = "api"
+	FailureProtocol FailureKind = "protocol"
+	FailureConfig   FailureKind = "config"
+)
 
-	Dial *websocket.Conn
+type Failure struct {
+	Kind FailureKind
+	Op   string
+	Err  error
 }
 
-func NewDanmuSpider(shortId int,
-	uid int64,
-	buvid string,
-	sessdata string,
-) *DanmuSpider {
-	ret := &DanmuSpider{ShortID: shortId,
-		UID:      uid,
-		BUVID:    buvid,
-		SESSDATA: sessdata}
-	ret.Init()
-	return ret
-}
+func (e *Failure) Error() string { return fmt.Sprintf("%s: %v", e.Op, e.Err) }
+func (e *Failure) Unwrap() error { return e.Err }
 
-/*
-整数 字节转换区
-32 4字节
-16 2字节
-*/
-func Itob32(num int32) []byte {
-	var buffer bytes.Buffer
-	err := binary.Write(&buffer, binary.BigEndian, num)
-	utils.PanicIfNotNil(err)
-	return buffer.Bytes()
-}
-
-func Itob16(num int16) []byte {
-	var buffer bytes.Buffer
-	err := binary.Write(&buffer, binary.BigEndian, num)
-	utils.PanicIfNotNil(err)
-	return buffer.Bytes()
-}
-
-func btoi32(b []byte) int32 {
-	var buffer int32
-	err := binary.Read(bytes.NewReader(b), binary.BigEndian, &buffer)
-	utils.PanicIfNotNil(err)
-	return buffer
-}
-
-func btoi16(b []byte) int16 {
-	var buffer int16
-	err := binary.Read(bytes.NewReader(b), binary.BigEndian, &buffer)
-	utils.PanicIfNotNil(err)
-	return buffer
-}
-
-func Btoi32(b []byte, offset int) int32 {
-	return btoi32(b[offset : offset+4])
-}
-
-func Btoi16(b []byte, offset int) int16 {
-	return btoi16(b[offset : offset+2])
-}
-
-// 认证生成与检查
-func HelloGen(roomid int, uid int64, buvid string, key string) []byte {
-	if roomid == 0 || buvid == "" || key == "" {
-		return []byte("")
+func KindOf(err error) FailureKind {
+	var failure *Failure
+	if errors.As(err, &failure) {
+		return failure.Kind
 	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return FailureNetwork
+	}
+	return FailureProtocol
+}
 
-	var obj = fmt.Sprintf(`{"roomid":%d,"uid":%d,"buvid":"%s","protover":3,"key":"%s","platform":"web","type":2}`, roomid, uid, buvid, key)
-	return EncodeMessage(obj, WS_OP_USER_AUTHENTICATION)
+func failure(kind FailureKind, op string, err error) error {
+	return &Failure{Kind: kind, Op: op, Err: err}
+}
+
+type DanmuSpider struct {
+	ShortID int
+	UID     int64
+	BUVID   string
+	Cookie  string
+
+	RoomID            int
+	Token             string
+	WSURL             []string
+	EndpointStateFile string
+
+	dial    *websocket.Conn
+	writeMu sync.Mutex
+	http    *http.Client
+}
+
+func NewDanmuSpider(shortID int, uid int64, buvid, cookie string) *DanmuSpider {
+	return &DanmuSpider{
+		ShortID: shortID,
+		UID:     uid,
+		BUVID:   buvid,
+		Cookie:  cookie,
+		http:    &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
 type Message struct {
@@ -123,228 +94,368 @@ type Message struct {
 	Body      []byte
 }
 
-func EncodeMessage(msg string, Operation int) []byte {
+func Itob32(num int32) []byte {
+	var b bytes.Buffer
+	_ = binary.Write(&b, binary.BigEndian, num)
+	return b.Bytes()
+}
+func Itob16(num int16) []byte {
+	var b bytes.Buffer
+	_ = binary.Write(&b, binary.BigEndian, num)
+	return b.Bytes()
+}
+
+func EncodeMessage(msg string, operation int) []byte {
 	var buffer bytes.Buffer
 	byteMsg := []byte(msg)
 	buffer.Write(Itob32(int32(len(byteMsg) + WS_PACKAGE_HEADER_TOTAL_LENGTH)))
 	buffer.Write(Itob16(WS_PACKAGE_HEADER_TOTAL_LENGTH))
 	buffer.Write(Itob16(WS_HEADER_DEFAULT_VERSION))
-	buffer.Write(Itob32(int32(Operation)))
-	buffer.Write(Itob32(int32(WS_HEADER_DEFAULT_SEQUENCE)))
+	buffer.Write(Itob32(int32(operation)))
+	buffer.Write(Itob32(WS_HEADER_DEFAULT_SEQUENCE))
 	buffer.Write(byteMsg)
 	return buffer.Bytes()
 }
 
+func HelloGen(roomID int, uid int64, buvid, key string) []byte {
+	obj := fmt.Sprintf(`{"roomid":%d,"uid":%d,"buvid":"%s","protover":3,"key":"%s","platform":"web","type":2}`, roomID, uid, buvid, key)
+	return EncodeMessage(obj, WS_OP_USER_AUTHENTICATION)
+}
+
 func (d *DanmuSpider) MessageHandler(msg *Message) {
-	//cmd := structs.Cmd{}
-	//utils.PanicIfNotNil(json.Unmarshal(msg.Body, &cmd))
 	Info <- logger.NewMsgInternalLoggerChannelMessage(string(msg.Body))
-	//switch cmd.Cmd {
-	//case "DANMU_MSG":
-	//	Comment := structs.Comment{}
-	//	Comment.CommentText = cmd.Info[1].(string)
-	//	Comment.UserID = int64(cmd.Info[2].([]interface{})[0].(float64))
-	//	Comment.UserName = cmd.Info[2].([]interface{})[1].(string)
-	//	Comment.IsAdmin = int64(cmd.Info[2].([]interface{})[2].(float64)) == 1
-	//	Comment.IsVIP = int64(cmd.Info[2].([]interface{})[3].(float64)) == 1
-	//	Comment.UserGuardLevel = int64(cmd.Info[7].(float64))
-	//
-	//case "INTERACT_WORD":
-	//	Interact := structs.Interact{}
-	//	utils.PanicIfNotNil(json.Unmarshal(msg.Body, &Interact))
-	//	logger.Info.Println(Interact.String())
-	//case "WATCHED_CHANGE":
-	//	WatchedChange := structs.WatchedChange{}
-	//	utils.PanicIfNotNil(json.Unmarshal(msg.Body, &WatchedChange))
-	//	logger.Info.Println(WatchedChange.String())
-	//case "STOP_LIVE_ROOM_LIST":
-	//	StopLiveRoomList := structs.StopLiveRoomList{}
-	//	utils.PanicIfNotNil(json.Unmarshal(msg.Body, &StopLiveRoomList))
-	//	logger.Info <- logger.NewSystemInternalLoggerChannelMessage()
-	//	Println(StopLiveRoomList.String())
-	//default:
-	//	logger.Debug <- logger.NewInternalLoggerChannelMessage(logger.LevelInfo, logger.TypeMsg, string(msg.Body))
-	//}
 }
 
-func (d *DanmuSpider) DecodeMessage(msg []byte) {
-	var err error
-	m := Message{}
-	reader := bytes.NewReader(msg)
-	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.PacketLen))
-	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.HeaderLen))
-	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.Ver))
-	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.Op))
-	utils.PanicIfNotNil(binary.Read(reader, binary.BigEndian, &m.Seq))
-	m.Body, err = io.ReadAll(reader)
-	utils.PanicIfNotNil(err)
-	switch m.Ver {
-	case WS_BODY_PROTOCOL_VERSION_NORMAL:
-	case WS_BODY_PROTOCOL_VERSION_HEARTBEAT_REPLY:
-	case WS_BODY_PROTOCOL_VERSION_DEFLATE:
-		zlibReader, err := zlib.NewReader(bytes.NewReader(m.Body))
-		utils.PanicIfNotNil(err)
-		m.Body, err = io.ReadAll(zlibReader)
-		utils.PanicIfNotNil(err)
-	case WS_BODY_PROTOCOL_VERSION_BROTLI:
-		m.Body, err = io.ReadAll(brotli.NewReader(bytes.NewReader(m.Body)))
-		utils.PanicIfNotNil(err)
+func (d *DanmuSpider) Run(ctx context.Context, connected func()) error {
+	if d.ShortID <= 0 {
+		return failure(FailureConfig, "validate room", errors.New("ShortID must be greater than zero"))
 	}
-	bodyReader := bytes.NewReader(m.Body)
-	switch m.Op {
-	case WS_OP_HEARTBEAT_REPLY:
-		var count int32
-		utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &count))
-		Info <- logger.NewSystemInternalLoggerChannelMessage("直播间人气:", count)
-	case WS_OP_MESSAGE:
-		if m.Ver == WS_BODY_PROTOCOL_VERSION_NORMAL {
-			d.MessageHandler(&m)
-		} else {
-			for bodyReader.Len() > 0 {
-				m := Message{}
-				utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &m.PacketLen))
-				utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &m.HeaderLen))
-				utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &m.Ver))
-				utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &m.Op))
-				utils.PanicIfNotNil(binary.Read(bodyReader, binary.BigEndian, &m.Seq))
-				m.Body = make([]byte, m.PacketLen-int32(m.HeaderLen))
-				n, err := bodyReader.Read(m.Body)
-				utils.PanicIfNotNil(err)
-				if n != int(m.PacketLen-int32(m.HeaderLen)) {
-					panic("数据包读取长度不正确")
-				}
-				d.MessageHandler(&m)
-			}
+	if err := d.discover(ctx); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for _, host := range d.WSURL {
+		u := url.URL{Scheme: "wss", Host: host, Path: "/sub"}
+		Debug <- logger.NewSystemInternalLoggerChannelMessage("尝试建立连接: ", u.String(), " 房间ID: ", d.RoomID)
+		dialer := *websocket.DefaultDialer
+		dialer.HandshakeTimeout = 15 * time.Second
+		conn, _, err := dialer.DialContext(ctx, u.String(), http.Header{"User-Agent": []string{userAgent}})
+		if err != nil {
+			lastErr = err
+			continue
 		}
-	case WS_OP_CONNECT_SUCCESS:
+		d.dial = conn
+		err = d.runConnection(ctx, connected)
+		_ = conn.Close()
+		if err == nil || ctx.Err() != nil || KindOf(err) == FailureAuth {
+			return err
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("API returned no websocket hosts")
+	}
+	return failure(FailureNetwork, "connect websocket hosts", lastErr)
+}
+
+func (d *DanmuSpider) discover(ctx context.Context) error {
+	room := structs.NewGetInfoByRoomResp()
+	roomURL, err := signedEndpoint(GetInfoByRoomURL(d.ShortID))
+	if err != nil {
+		return err
+	}
+	if err := d.getJSON(ctx, roomURL, "", room); err != nil {
+		return err
+	}
+	if room.Code != 0 || room.Data.RoomInfo.RoomId == 0 {
+		return failure(FailureAPI, "get room info", fmt.Errorf("code=%d message=%s room_id=%d", room.Code, room.Message, room.Data.RoomInfo.RoomId))
+	}
+	d.RoomID = room.Data.RoomInfo.RoomId
+
+	info := structs.NewGetDanmuInfoResp()
+	danmuURL, err := signedEndpoint(GetDanmuInfoURL(d.RoomID))
+	if err != nil {
+		return err
+	}
+	if err := d.getJSON(ctx, danmuURL, d.Cookie, info); err != nil {
+		return err
+	}
+	if info.Code == -101 {
+		return failure(FailureAuth, "get danmu token", errors.New("login expired"))
+	}
+	if info.Code != 0 || info.Data.Token == "" || len(info.Data.HostList) == 0 {
+		apiErr := failure(FailureAPI, "get danmu token", fmt.Errorf("code=%d message=%s token=%t hosts=%d", info.Code, info.Message, info.Data.Token != "", len(info.Data.HostList)))
+		if cacheErr := d.loadEndpointState(); cacheErr == nil {
+			Debug <- logger.NewSystemInternalLoggerChannelMessage("弹幕节点接口受限，使用最近缓存的节点和令牌: ", apiErr)
+			return nil
+		}
+		return apiErr
+	}
+	d.Token, d.WSURL = info.Data.Token, d.WSURL[:0]
+	for _, host := range info.Data.HostList {
+		if host.Host != "" {
+			d.WSURL = append(d.WSURL, host.Host)
+		}
+	}
+	if err := d.saveEndpointState(); err != nil {
+		Debug <- logger.NewSystemInternalLoggerChannelMessage("保存弹幕节点缓存失败: ", err)
+	}
+	return nil
+}
+
+type EndpointState struct {
+	RoomID    int       `json:"room_id"`
+	Token     string    `json:"token"`
+	Hosts     []string  `json:"hosts"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func FetchEndpoint(ctx context.Context, shortID int, uid int64, buvid, cookie string) (EndpointState, error) {
+	client := NewDanmuSpider(shortID, uid, buvid, cookie)
+	if err := client.discover(ctx); err != nil {
+		return EndpointState{}, err
+	}
+	return EndpointState{RoomID: client.RoomID, Token: client.Token, Hosts: client.WSURL, UpdatedAt: time.Now()}, nil
+}
+
+func (d *DanmuSpider) loadEndpointState() error {
+	if d.EndpointStateFile == "" {
+		return errors.New("endpoint cache is disabled")
+	}
+	data, err := os.ReadFile(d.EndpointStateFile)
+	if err != nil {
+		return err
+	}
+	var state EndpointState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	if state.RoomID != d.RoomID || state.Token == "" || len(state.Hosts) == 0 {
+		return errors.New("endpoint cache is incomplete or for another room")
+	}
+	d.Token, d.WSURL = state.Token, append(d.WSURL[:0], state.Hosts...)
+	return nil
+}
+
+func (d *DanmuSpider) saveEndpointState() error {
+	if d.EndpointStateFile == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(d.EndpointStateFile), 0700); err != nil {
+		return err
+	}
+	state := EndpointState{RoomID: d.RoomID, Token: d.Token, Hosts: d.WSURL, UpdatedAt: time.Now()}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := d.EndpointStateFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, d.EndpointStateFile)
+}
+
+func signedEndpoint(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", failure(FailureConfig, "parse API URL", err)
+	}
+	if err := utils.Sign(parsed); err != nil {
+		return "", failure(FailureAPI, "sign API URL", err)
+	}
+	return parsed.String(), nil
+}
+
+func (d *DanmuSpider) getJSON(ctx context.Context, endpoint, cookie string, dst interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return failure(FailureConfig, "create HTTP request", err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Referer", fmt.Sprintf("https://live.bilibili.com/%d", d.RoomID))
+	req.Header.Set("Origin", "https://live.bilibili.com")
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return failure(FailureNetwork, "HTTP GET", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return failure(FailureAPI, "HTTP GET", fmt.Errorf("status=%s", resp.Status))
+	}
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 4<<20))
+	if err := decoder.Decode(dst); err != nil {
+		return failure(FailureProtocol, "decode API JSON", err)
+	}
+	return nil
+}
+
+func (d *DanmuSpider) runConnection(ctx context.Context, connected func()) error {
+	if err := d.write(websocket.BinaryMessage, HelloGen(d.RoomID, d.UID, d.BUVID, d.Token)); err != nil {
+		return failure(FailureNetwork, "send authentication", err)
+	}
+	readErr := make(chan error, 1)
+	authenticated := make(chan struct{}, 1)
+	go d.readLoop(readErr, authenticated)
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-readErr:
+		return err
+	case <-authenticated:
 		Debug <- logger.NewSystemInternalLoggerChannelMessage("成功进入房间")
-	default:
-		Debug <- logger.NewSystemInternalLoggerChannelMessage("Unknown OpType", m.Op, string(m.Body))
-	}
-	//switch m.Op {
-	//case WS_OP_MESSAGE:
-	//	packetLen := 0
-	//	for packet := binary.Read(reader, binary.BigEndian, packetLen)
-	//case WS_OP_HEARTBEAT_REPLY:
-	//	count := Btoi32(msg, 16)
-	//	return fmt.Sprintf("当前人气数：%d", count)
-	//}
-	//
-	//return buffer.Bytes()
-}
-
-func (d *DanmuSpider) Send(msg []byte) {
-	utils.PanicIfNotNil(d.Dial.WriteMessage(websocket.TextMessage, msg))
-}
-
-func (d *DanmuSpider) HeartBeat() {
-	Debug <- logger.NewSystemInternalLoggerChannelMessage("发送心跳包")
-	d.Send(EncodeMessage("[object Object]", WS_OP_HEARTBEAT))
-}
-
-func (d *DanmuSpider) Init() {
-	//Get RoomID
-	{
-		parsed, err := url.Parse(GetInfoByRoomURL(d.ShortID))
-		utils.PanicIfNotNil(err)
-		err = utils.Sign(parsed)
-		utils.PanicIfNotNil(err)
-		req, _ := http.NewRequest("GET", parsed.String(), nil)
-		req.Header.Add("Cookie",
-			fmt.Sprintf("buvid3=%s", d.BUVID),
-		)
-		req.Header.Add("user-agent", userAgent)
-		resp, err := http.DefaultClient.Do(req)
-		utils.PanicIfNotNil(err)
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		utils.PanicIfNotNil(err)
-		struttedResp := structs.NewGetInfoByRoomResp()
-		utils.PanicIfNotNil(json.Unmarshal(body, &struttedResp))
-		d.RoomID = struttedResp.Data.RoomInfo.RoomId
-	}
-
-	//Get DanmuServerURL
-	{
-		parsed, err := url.Parse(GetDanmuInfoURL(d.RoomID))
-		utils.PanicIfNotNil(err)
-		err = utils.Sign(parsed)
-		utils.PanicIfNotNil(err)
-		req, _ := http.NewRequest("GET", parsed.String(), nil)
-		req.Header.Add("Cookie",
-			fmt.Sprintf("buvid3=%s; SESSDATA=%s", d.BUVID, d.SESSDATA),
-		)
-		req.Header.Add("user-agent", userAgent)
-		resp, err := http.DefaultClient.Do(req)
-		// resp, err := http.Get(GetDanmuInfoURL(d.RoomID))
-		utils.PanicIfNotNil(err)
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		utils.PanicIfNotNil(err)
-		struttedResp := structs.NewGetDanmuInfoResp()
-		utils.PanicIfNotNil(json.Unmarshal(body, &struttedResp))
-
-		d.Token = struttedResp.Data.Token
-		for i := range struttedResp.Data.HostList {
-			d.WSURL = append(d.WSURL, struttedResp.Data.HostList[i].Host)
+		if connected != nil {
+			connected()
 		}
 	}
 
-	// Connect To DanmuServer
-	{
-		u := url.URL{Scheme: "wss", Host: d.WSURL[0], Path: "/sub"}
-		Debug <- logger.NewSystemInternalLoggerChannelMessage("尝试建立连接：", u.String(), "房间ID：", d.RoomID)
-		var err error
-		d.Dial, _, err = websocket.DefaultDialer.Dial(u.String(), make(http.Header))
-		utils.PanicIfNotNil(err)
-		defer d.Dial.Close()
-
-		d.Send(HelloGen(d.RoomID, d.UID, d.BUVID, d.Token))
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			for {
-				utils.PanicIfNotNil(d.Dial.SetReadDeadline(time.Now().Add(time.Minute)))
-				messageType, message, err := d.Dial.ReadMessage()
-				if err != nil {
-					if e, ok := err.(*websocket.CloseError); ok {
-						switch e.Code {
-						case websocket.CloseNormalClosure:
-							Debug <- logger.NewSystemInternalLoggerChannelMessage("服务器连接关闭")
-						case websocket.CloseAbnormalClosure:
-							Debug <- logger.NewSystemInternalLoggerChannelMessage("服务器连接中断")
-						default:
-							Debug <- logger.NewSystemInternalLoggerChannelMessage("未知错误")
-						}
-					}
-					return
-				}
-				utils.PanicIfNotNil(err)
-				switch messageType {
-				case websocket.TextMessage:
-					Debug <- logger.NewSystemInternalLoggerChannelMessage("TextMessage Rec: ", string(message))
-				case websocket.BinaryMessage:
-					d.DecodeMessage(message)
-				case websocket.CloseMessage:
-					return
-				case websocket.PingMessage:
-					utils.PanicIfNotNil(d.Dial.WriteMessage(websocket.PongMessage, message))
-				case websocket.PongMessage:
-				}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-readErr:
+			return err
+		case <-ticker.C:
+			if err := d.write(websocket.BinaryMessage, EncodeMessage("[object Object]", WS_OP_HEARTBEAT)); err != nil {
+				return failure(FailureNetwork, "send heartbeat", err)
 			}
-		}()
+		}
+	}
+}
 
-		ticker := time.NewTicker(time.Second * 30)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				d.HeartBeat()
-			case <-done:
+func (d *DanmuSpider) readLoop(result chan<- error, authenticated chan<- struct{}) {
+	for {
+		if err := d.dial.SetReadDeadline(time.Now().Add(75 * time.Second)); err != nil {
+			result <- failure(FailureNetwork, "set read deadline", err)
+			return
+		}
+		messageType, payload, err := d.dial.ReadMessage()
+		if err != nil {
+			result <- failure(FailureNetwork, "read websocket", err)
+			return
+		}
+		switch messageType {
+		case websocket.BinaryMessage:
+			authOK, err := d.decodeMessage(payload)
+			if err != nil {
+				result <- err
 				return
 			}
+			if authOK {
+				select {
+				case authenticated <- struct{}{}:
+				default:
+				}
+			}
+		case websocket.PingMessage:
+			if err := d.write(websocket.PongMessage, payload); err != nil {
+				result <- failure(FailureNetwork, "send pong", err)
+				return
+			}
+		case websocket.CloseMessage:
+			result <- failure(FailureNetwork, "read websocket", errors.New("server closed connection"))
+			return
 		}
 	}
+}
+
+func (d *DanmuSpider) write(messageType int, payload []byte) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+	_ = d.dial.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return d.dial.WriteMessage(messageType, payload)
+}
+
+func (d *DanmuSpider) decodeMessage(payload []byte) (bool, error) {
+	messages, err := unpackMessages(payload)
+	if err != nil {
+		return false, failure(FailureProtocol, "decode websocket packet", err)
+	}
+	authOK := false
+	for _, msg := range messages {
+		switch msg.Op {
+		case WS_OP_HEARTBEAT_REPLY:
+			if len(msg.Body) >= 4 {
+				Info <- logger.NewSystemInternalLoggerChannelMessage("直播间人气: ", int32(binary.BigEndian.Uint32(msg.Body[:4])))
+			}
+		case WS_OP_MESSAGE:
+			d.MessageHandler(&msg)
+		case WS_OP_CONNECT_SUCCESS:
+			var reply struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(msg.Body, &reply); err != nil {
+				return false, failure(FailureProtocol, "decode auth reply", err)
+			}
+			if reply.Code != WS_AUTH_OK {
+				return false, failure(FailureAuth, "websocket authentication", fmt.Errorf("code=%d message=%s", reply.Code, reply.Message))
+			}
+			authOK = true
+		}
+	}
+	return authOK, nil
+}
+
+func unpackMessages(data []byte) ([]Message, error) {
+	var result []Message
+	for len(data) > 0 {
+		if len(data) < WS_PACKAGE_HEADER_TOTAL_LENGTH {
+			return nil, io.ErrUnexpectedEOF
+		}
+		packetLen := int(binary.BigEndian.Uint32(data[0:4]))
+		headerLen := int(binary.BigEndian.Uint16(data[4:6]))
+		if packetLen < headerLen || headerLen < WS_PACKAGE_HEADER_TOTAL_LENGTH || packetLen > len(data) {
+			return nil, fmt.Errorf("invalid packet length packet=%d header=%d remaining=%d", packetLen, headerLen, len(data))
+		}
+		msg := Message{PacketLen: int32(packetLen), HeaderLen: int16(headerLen), Ver: int16(binary.BigEndian.Uint16(data[6:8])), Op: int32(binary.BigEndian.Uint32(data[8:12])), Seq: int32(binary.BigEndian.Uint32(data[12:16])), Body: data[headerLen:packetLen]}
+		switch msg.Ver {
+		case WS_BODY_PROTOCOL_VERSION_DEFLATE:
+			reader, err := zlib.NewReader(bytes.NewReader(msg.Body))
+			if err != nil {
+				return nil, err
+			}
+			decoded, err := io.ReadAll(reader)
+			closeErr := reader.Close()
+			if err != nil {
+				return nil, err
+			}
+			if closeErr != nil {
+				return nil, closeErr
+			}
+			nested, err := unpackMessages(decoded)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, nested...)
+		case WS_BODY_PROTOCOL_VERSION_BROTLI:
+			decoded, err := io.ReadAll(brotli.NewReader(bytes.NewReader(msg.Body)))
+			if err != nil {
+				return nil, err
+			}
+			nested, err := unpackMessages(decoded)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, nested...)
+		default:
+			result = append(result, msg)
+		}
+		data = data[packetLen:]
+	}
+	return result, nil
+}
+
+// DecodeMessage remains for callers of the old SDK API. New code should use Run.
+func (d *DanmuSpider) DecodeMessage(payload []byte) { _, _ = d.decodeMessage(payload) }
+func (d *DanmuSpider) Send(msg []byte)              { _ = d.write(websocket.BinaryMessage, msg) }
+func (d *DanmuSpider) HeartBeat() {
+	_ = d.write(websocket.BinaryMessage, EncodeMessage("[object Object]", WS_OP_HEARTBEAT))
 }

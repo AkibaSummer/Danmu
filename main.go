@@ -132,7 +132,7 @@ func main() {
 	}
 	for ctx.Err() == nil {
 		authStatus, err := auth.EnsureValid(ctx)
-		if err != nil {
+		if err != nil && spider.KindOf(err) != spider.FailureAuth {
 			kind := spider.KindOf(err)
 			state.update(func(h *healthState) {
 				h.Status, h.Connected, h.AuthStatus = "stopped", false, "check_failed"
@@ -144,10 +144,17 @@ func main() {
 			}
 			continue
 		}
-		if !authStatus.LoggedIn {
+		if shouldStartQRCode(authStatus, err) {
+			detail := "login expired; recording stopped; scan QR to resume"
+			authLabel := authStatus.Label()
+			if err != nil {
+				detail = err.Error()
+				authLabel = "refresh_failed"
+				log.Printf("AUTH_CHECK_FAILED kind=%s; switching to QR login: %v", spider.KindOf(err), err)
+			}
 			state.update(func(h *healthState) {
-				h.Status, h.Connected, h.AuthStatus = "awaiting_qr_login", false, authStatus.Label()
-				h.FailureKind, h.Detail = string(spider.FailureAuth), "login expired; recording stopped; scan QR to resume"
+				h.Status, h.Connected, h.AuthStatus = "awaiting_qr_login", false, authLabel
+				h.FailureKind, h.Detail = string(spider.FailureAuth), detail
 			})
 			if !viper.GetBool("bili.QRLogin") {
 				log.Printf("AUTH_EXPIRED: recording is stopped; QR login is disabled")
@@ -217,6 +224,10 @@ func main() {
 		}
 	}
 	log.Println("shutdown complete")
+}
+
+func shouldStartQRCode(status spider.AuthStatus, err error) bool {
+	return !status.LoggedIn || (err != nil && spider.KindOf(err) == spider.FailureAuth)
 }
 
 func wait(ctx context.Context, duration time.Duration) bool {

@@ -39,6 +39,14 @@ func ReadableParser(message *logger.InternalLoggerChannelMessage) (ret *logger.I
 						utils.Unptr(utils.GetString(msg.Copy().Find("data.giftName"))),
 					),
 				)
+			case "SEND_GIFT_V2":
+				gift, err := parseSendGiftV2(utils.Unptr(utils.GetString(msg.Copy().Find("data.pb"))))
+				if err != nil {
+					return logger.NewInternalWriterChannelMessageNeedSkip()
+				}
+				return logger.NewInternalWriterChannelMessage(
+					fmt.Sprintf("%s(%d) 赠送了 %d 个 %s", gift.UserName, gift.UID, gift.Num, gift.GiftName),
+				)
 			case "INTERACT_WORD":
 			//case "WATCHED_CHANGE":
 			//case "STOP_LIVE_ROOM_LIST":

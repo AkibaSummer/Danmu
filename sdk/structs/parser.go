@@ -5,6 +5,7 @@ import (
 	"github.com/AkibaSummer/Danmu/sdk/utils"
 	"github.com/AkibaSummer/Danmu/sdk/utils/logger"
 	gojsonq "github.com/thedevsaddam/gojsonq/v2"
+	"strings"
 	"time"
 )
 
@@ -40,13 +41,15 @@ func ReadableParser(message *logger.InternalLoggerChannelMessage) (ret *logger.I
 					),
 				)
 			case "SEND_GIFT_V2":
-				gift, err := parseSendGiftV2(utils.Unptr(utils.GetString(msg.Copy().Find("data.pb"))))
+				gifts, err := parseSendGiftV2(utils.Unptr(utils.GetString(msg.Copy().Find("data.pb"))))
 				if err != nil {
 					return logger.NewInternalWriterChannelMessageNeedSkip()
 				}
-				return logger.NewInternalWriterChannelMessage(
-					fmt.Sprintf("%s(%d) 赠送了 %d 个 %s", gift.UserName, gift.UID, gift.Num, gift.GiftName),
-				)
+				lines := make([]string, 0, len(gifts))
+				for _, gift := range gifts {
+					lines = append(lines, fmt.Sprintf("%s(%d) 赠送了 %d 个 %s", gift.UserName, gift.UID, gift.Num, gift.GiftName))
+				}
+				return logger.NewInternalWriterChannelMessage(strings.Join(lines, "；"))
 			case "INTERACT_WORD":
 			//case "WATCHED_CHANGE":
 			//case "STOP_LIVE_ROOM_LIST":

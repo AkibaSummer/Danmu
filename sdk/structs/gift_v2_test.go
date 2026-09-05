@@ -15,12 +15,38 @@ func TestParseSendGiftV2(t *testing.T) {
 	payload = appendProtoBytes(payload, 2, []byte("测试用户"))
 	payload = appendProtoBytes(payload, 10, giftPayload)
 
-	got, err := parseSendGiftV2(base64.StdEncoding.EncodeToString(payload))
+	gifts, err := parseSendGiftV2(base64.StdEncoding.EncodeToString(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(gifts) != 1 {
+		t.Fatalf("got %d gifts, want 1", len(gifts))
+	}
+	got := gifts[0]
 	if got.UID != 123456 || got.UserName != "测试用户" || got.GiftID != 31036 || got.GiftName != "小花花" || got.Num != 1 {
 		t.Fatalf("unexpected gift: %#v", got)
+	}
+}
+
+func TestParseSendGiftV2ReturnsEveryPackedGift(t *testing.T) {
+	first := appendProtoVarint(nil, 1, 32126)
+	first = appendProtoBytes(first, 2, []byte("棉花糖"))
+	first = appendProtoVarint(first, 3, 7)
+	second := appendProtoVarint(nil, 1, 32128)
+	second = appendProtoBytes(second, 2, []byte("爱心抱枕"))
+	second = appendProtoVarint(second, 3, 3)
+	payload := appendProtoVarint(nil, 1, 629184597)
+	payload = appendProtoBytes(payload, 2, []byte("柠汪汪"))
+	payload = appendProtoBytes(payload, 10, first)
+	payload = appendProtoBytes(payload, 10, second)
+
+	gifts, err := parseSendGiftV2(base64.StdEncoding.EncodeToString(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gifts) != 2 || gifts[0].GiftName != "棉花糖" || gifts[0].Num != 7 ||
+		gifts[1].GiftName != "爱心抱枕" || gifts[1].Num != 3 {
+		t.Fatalf("unexpected gifts: %#v", gifts)
 	}
 }
 

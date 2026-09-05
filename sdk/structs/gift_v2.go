@@ -16,41 +16,54 @@ type sendGiftV2 struct {
 
 // parseSendGiftV2 decodes the compact protobuf payload carried in data.pb.
 // Bilibili introduced SEND_GIFT_V2 without exposing the gift fields in JSON.
-func parseSendGiftV2(encoded string) (sendGiftV2, error) {
+func parseSendGiftV2(encoded string) ([]sendGiftV2, error) {
 	payload, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return sendGiftV2{}, fmt.Errorf("decode data.pb: %w", err)
+		return nil, fmt.Errorf("decode data.pb: %w", err)
 	}
 
-	var gift sendGiftV2
-	err = walkProto(payload, func(field int, wireType byte, value uint64, data []byte) error {
+	var uid int64
+	var username string
+	var giftPayloads [][]byte
+	if err := walkProto(payload, func(field int, wireType byte, value uint64, data []byte) error {
 		switch {
 		case field == 1 && wireType == 0:
-			gift.UID = int64(value)
+			uid = int64(value)
 		case field == 2 && wireType == 2:
-			gift.UserName = string(data)
+			username = string(data)
 		case field == 10 && wireType == 2:
-			return walkProto(data, func(giftField int, giftWireType byte, giftValue uint64, giftData []byte) error {
-				switch {
-				case giftField == 1 && giftWireType == 0:
-					gift.GiftID = int64(giftValue)
-				case giftField == 2 && giftWireType == 2:
-					gift.GiftName = string(giftData)
-				case giftField == 3 && giftWireType == 0:
-					gift.Num = int64(giftValue)
-				}
-				return nil
-			})
+			giftPayloads = append(giftPayloads, data)
 		}
 		return nil
-	})
-	if err != nil {
-		return sendGiftV2{}, fmt.Errorf("decode gift protobuf: %w", err)
+	}); err != nil {
+		return nil, fmt.Errorf("decode gift protobuf: %w", err)
 	}
-	if gift.UID <= 0 || gift.UserName == "" || gift.GiftID <= 0 || gift.GiftName == "" || gift.Num <= 0 {
-		return sendGiftV2{}, errors.New("gift protobuf is missing required fields")
+	if uid <= 0 || username == "" || len(giftPayloads) == 0 {
+		return nil, errors.New("gift protobuf is missing required fields")
 	}
-	return gift, nil
+
+	gifts := make([]sendGiftV2, 0, len(giftPayloads))
+	for _, data := range giftPayloads {
+		gift := sendGiftV2{UID: uid, UserName: username}
+		if err := walkProto(data, func(field int, wireType byte, value uint64, data []byte) error {
+			switch {
+			case field == 1 && wireType == 0:
+				gift.GiftID = int64(value)
+			case field == 2 && wireType == 2:
+				gift.GiftName = string(data)
+			case field == 3 && wireType == 0:
+				gift.Num = int64(value)
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("decode gift protobuf: %w", err)
+		}
+		if gift.GiftID <= 0 || gift.GiftName == "" || gift.Num <= 0 {
+			return nil, errors.New("gift protobuf is missing required fields")
+		}
+		gifts = append(gifts, gift)
+	}
+	return gifts, nil
 }
 
 func walkProto(data []byte, visit func(field int, wireType byte, value uint64, data []byte) error) error {

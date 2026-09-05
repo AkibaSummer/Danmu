@@ -83,3 +83,18 @@ func TestHistoricalGiftSamples(t *testing.T) {
 	}
 	t.Logf("validated %d historical gift events", count)
 }
+
+func TestReadableParserAcceptsCommandSuffix(t *testing.T) {
+	info := []any{
+		[]any{0, 1, 25, 0xffffff, 1_721_800_000},
+		"suffix-test",
+		[]any{123456, "测试用户", 0},
+		[]any{},
+		nil, nil, nil, 0,
+	}
+	raw, _ := json.Marshal(map[string]any{"cmd": "DANMU_MSG:4:0:2:2:2:0", "info": info})
+	result := ReadableParser(logger.NewMsgInternalLoggerChannelMessage(string(raw)))
+	if result.Skip || !strings.Contains(result.Message, "suffix-test") {
+		t.Fatalf("suffixed command was not parsed: %+v", result)
+	}
+}

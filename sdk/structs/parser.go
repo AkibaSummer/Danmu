@@ -23,6 +23,9 @@ func ReadableParser(message *logger.InternalLoggerChannelMessage) (ret *logger.I
 		msg := gojsonq.New().FromString(message.Message)
 		cmd, ok := msg.Copy().Find("cmd").(string)
 		if ok {
+			if index := strings.IndexByte(cmd, ':'); index >= 0 {
+				cmd = cmd[:index]
+			}
 			switch cmd {
 			case "DANMU_MSG":
 				return logger.NewInternalWriterChannelMessage((&Comment{
